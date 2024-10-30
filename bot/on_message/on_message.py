@@ -1,9 +1,10 @@
 
 from datetime import datetime
 from rich import print
+from bot.on_message.bots import image_handler
 from bot.on_message.bots.response_handlers import *
 from bot.on_message.respond import respond
-from config import cuomputer_id, channels, rivers_id, long_name
+from config import OPENAI_API_KEY, cuomputer_id, channels, rivers_id, long_name
 # from bot.on_message.bots.knowledgebot import post_google_knowledge_response
 # from bot.on_message.bots.riversbot import post_riverbot_response
 from bot.scripts.add_roles import (
@@ -56,32 +57,11 @@ async def on_message(message):
     if await is_message_from_other_guild(message):
         return
 
-    # if message.attachments:
-    #     for attachment in message.attachments:
-    #         if any(attachment.filename.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
-    #             image_data = requests.get(attachment.url).content
-
-    #             # Use OpenAI API to analyze the image
-    #             try:
-    #                 # Assuming GPT-4 with vision capabilities
-    #                 response = openai.ChatCompletion.create(
-    #                     model="gpt-4-turbo",
-    #                     messages=[
-    #                         {"role": "user", "content": "What is in this image?"},
-    #                     ],
-    #                     files=[("image", ("image.png", BytesIO(image_data), "image/png"))]
-    #                 )
-
-    #                 # Extract response text
-    #                 analysis_result = response['choices'][0]['message']['content']
-                    
-    #                 # Send the analysis result as a reply
-    #                 await message.channel.send(f"Image Analysis: {analysis_result}")
-
-    #             except Exception as e:
-    #                 await message.channel.send("Sorry, I couldn't analyze the image.")
-    #                 print(e)  # Log the error for debugging
-    #             return
+    if message.attachments:
+        for attachment in message.attachments:
+            if attachment.content_type.startswith('image/'):
+                await image_handler.process_image_and_respond(attachment, message.channel)
+        return
 
     g = message.guild.name  # if message.guild.id != GUILD_ID else ""
     print(f"{g}\"{channel.name}\"<{author.name} {author.id}>:'{message.content}'")
