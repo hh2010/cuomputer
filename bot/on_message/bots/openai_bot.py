@@ -5,6 +5,7 @@ import openai
 from rich import print
 import random
 
+DEFAULT_MESSAGE_LOOKBACK_COUNT = 12
 
 class OpenAIBot:
     def __init__(self, long_name, short_name, openai_sessions, weezerpedia_api):
@@ -74,9 +75,9 @@ class OpenAIBot:
 
         return True
 
-    def build_ai_response(self, message, system: str, adjective: str):
+    def build_ai_response(self, message, system: str, adjective: str, num_messages: int = DEFAULT_MESSAGE_LOOKBACK_COUNT):
         text = message.content
-        reply = self.fetch_openai_completion(message, system, text)
+        reply = self.fetch_openai_completion(message, system, text, num_messages)
         reply = reply.replace("!", ".")
         return reply.strip()
 
@@ -112,7 +113,7 @@ class OpenAIBot:
             print(f"An error occurred: {e}")
             return None
 
-    def fetch_openai_completion(self, message, system, incoming_message_text):
+    def fetch_openai_completion(self, message, system, incoming_message_text, num_messages=DEFAULT_MESSAGE_LOOKBACK_COUNT):
 
         system_message = {"role": "system", "content": system}
 
@@ -144,9 +145,9 @@ class OpenAIBot:
         # Step 4: Append any attachments to the user's message
         new_content = self.append_any_attachments(message, new_content)
 
-        # Step 5: Limit the number of messages in the session to 12
-        if len(messages_in_this_channel) > 12:
-            messages_in_this_channel = messages_in_this_channel[-12:]
+        # Step 5: Limit the number of messages in the session
+        if len(messages_in_this_channel) > num_messages:
+            messages_in_this_channel = messages_in_this_channel[-num_messages:]
 
         # Step 6: Append all the new content to list of messages in this channel
         messages_in_this_channel.extend(new_content)
