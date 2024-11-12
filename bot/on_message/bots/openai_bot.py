@@ -148,7 +148,6 @@ class OpenAIBot:
             choice = completion.choices[0].message
 
             if choice.function_call and function_call:
-                print("HAHA")
                 arguments = choice.function_call.arguments
 
                 function_args = json.loads(arguments)
