@@ -217,7 +217,7 @@ class OpenAIBot:
 
         return response_text
 
-    def append_any_attachments(self, attachment_urls: list[str], content: list[dict[str, Any]]):
+    def append_any_images(self, attachment_urls: list[str], content: list[dict[str, Any]]):
         for url in attachment_urls:
             if any(ext in url for ext in ['.jpg', '.jpeg', '.png', '.gif']):
                 content.append({"role": "user", "content": [
