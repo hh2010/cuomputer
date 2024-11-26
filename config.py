@@ -116,7 +116,7 @@ everyone = 890210072381247548
 
 rivers_id = 734902900257718355  # ????
 cuomputer_id = (
-    890946668940361778  # this is the bot that posts the messages on your behalf
+    1300374426872840212  # this is the bot that posts the messages on your behalf
 )
 
 riverbot_id = cuomputer_id
