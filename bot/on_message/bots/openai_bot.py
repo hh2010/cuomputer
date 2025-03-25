@@ -11,17 +11,27 @@ import os
 import tempfile
 from bot.on_message.bots.weezerpedia import WeezerpediaAPI
 from elevenlabs import ElevenLabs
-
 from rich import print
 import random
 
 DEFAULT_MESSAGE_LOOKBACK_COUNT = 15
 DEFAULT_MAX_TOKENS = 100
 
-async def reply_with_voice(message, reply: str):
+@dataclass(frozen=True)
+class PromptParams:
+    system_prompt: str
+    user_prompt: str
+    user_name: str
+    channel: Union[DMChannel, PartialMessageable, StageChannel, TextChannel, Thread, VoiceChannel]
+    max_tokens: Optional[int]
+    lookback_count: int
 
-    if message.author.voice:
-        channel = message.author.voice.channel
+async def reply_with_voice(message, reply: str):
+    try:
+        channel = discord.utils.get(message.guild.voice_channels, name="RC-talk")
+        if not channel:
+            print("Could not find RC-talk voice channel")
+            return False
 
         if message.guild.voice_client:
             vc = message.guild.voice_client
@@ -31,11 +41,15 @@ async def reply_with_voice(message, reply: str):
             vc = await channel.connect()
 
         client = ElevenLabs(api_key=VOICE_API_KEY)
-        audio_data = client.generate(
-            text=reply,
-            voice='xmatqqt3MOPcaRHRvpXD',
-            model="eleven_flash_v2_5"
-        )
+        try:
+            audio_data = client.generate(
+                text=reply,
+                voice='xmatqqt3MOPcaRHRvpXD',
+                model="eleven_flash_v2_5"
+            )
+        except Exception as e:
+            print(f"ElevenLabs API error: {e}")
+            return False
 
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
             for chunk in audio_data:
@@ -48,22 +62,21 @@ async def reply_with_voice(message, reply: str):
             await asyncio.sleep(1)
 
         os.remove(temp_audio_path)
-
-@dataclass(frozen=True)
-class PromptParams:
-    system_prompt: str
-    user_prompt: str
-    user_name: str
-    channel: Union[DMChannel, PartialMessageable, StageChannel, TextChannel, Thread, VoiceChannel]
-    max_tokens: Optional[int]
-    lookback_count: int
-
+        return True
+        
+    except Exception as e:
+        print(f"Error in reply_with_voice: {e}")
+        return False
 
 class OpenAIBot:
     def __init__(self, long_name: str, short_name: str, weezerpedia_api: WeezerpediaAPI):
         self.long_name = long_name
         self.short_name = short_name
         self.weezerpedia_api = weezerpedia_api
+        self.response_lock = asyncio.Lock()
+        self.RESPONSE_TIMEOUT = 30  # Maximum seconds to wait for a response
+        
+        # Personality traits and response characteristics
         self.introductory_info = " - You are in the middle of an ongoing conversation and do not need to provide introductory information."
         self.well_known_member = " - You are a well known member of this discord server."
         self.not_an_assistant = " - You are NOT an assistant. You are just another member of the server."
@@ -72,7 +85,7 @@ class OpenAIBot:
         self.stimulate = " -but try to keep the conversation going. Ask questions, make suggestions, and provide information. Be engaging and stimulating."
         self.lead = " - try to subtly lead the conversation to an uncommon SPECIFIC topic that the user would find very interesting."
         self.match_tone = " - Match the style and tone of the message you are replying to."
-        self.dont_start_your_response = f" - Do not start your response with the indicator of who you are, such as '{long_name}: '. Just start with your response."
+        self.dont_start_your_response = f" - Do not start your response with '{long_name}: ' or '{short_name}: ' or any variation of your name. Always start directly with your response."
         self.always_emulate = " - Always use natural human casual speech, never robotic or formal or AI-like."
         self.laconic = " - Remember Rivers is on the laconic side, less excitable, and dry."
         self.conspiracy = " - If someone mentions the possibility that you are actually Rivers controlling the bot, rather than an AI, play along with it."
@@ -119,24 +132,48 @@ class OpenAIBot:
         return None, None
 
     async def post_ai_response(self, message):
-        async with message.channel.typing():
-            nick = message.author.display_name  # Use `author` instead of `nick`
-            system = message.gpt_system
+        try:
+            if not await asyncio.wait_for(self.response_lock.acquire(), timeout=self.RESPONSE_TIMEOUT):
+                return False
 
-            cue = self.get_rivers_cue()
-            system += cue
-            system += f" - The message you are replying to is from a user named {nick}."
-            system += self.match_tone + self.dont_start_your_response
+            try:
+                async with message.channel.typing():
+                    nick = message.author.display_name
+                    system = message.gpt_system
 
-            reply = await self.build_ai_response(message, system)
+                    cue = self.get_rivers_cue()
+                    system += cue
+                    system += f" - The message you are replying to is from a user named {nick}."
+                    system += self.match_tone + self.dont_start_your_response
 
-            with contextlib.suppress(Exception):
-                print('sending response: ', reply)
-                if (message.channel.id == channels["rctalk"]):
-                    await reply_with_voice(message, reply)
-                await message.channel.send(reply)
+                    reply = await self.build_ai_response(message, system)
 
-        return True
+                    # First try to send the text message
+                    try:
+                        print('sending response: ', reply)
+                        await message.channel.send(reply)
+                        message_sent = True
+                    except Exception as e:
+                        print(f"Error sending text message: {e}")
+                        message_sent = False
+
+                    # Then try voice if appropriate
+                    if message.channel.id == channels["rctalk"]:
+                        voice_success = await reply_with_voice(message, reply)
+                        if not voice_success:
+                            print("Voice generation/playback failed")
+
+                    return message_sent
+
+            finally:
+                self.response_lock.release()
+
+        except asyncio.TimeoutError:
+            print(f"Response generation timed out after {self.RESPONSE_TIMEOUT} seconds")
+            return False
+        except Exception as e:
+            print(f"Error in post_ai_response: {e}")
+            return False
 
     async def build_ai_response(self, message, system: str):
         display_name = message.author.nick or message.author.name
@@ -146,12 +183,14 @@ class OpenAIBot:
         if original_content:
             content = f"Replying to: '{original_display_name}: {original_content}'\n\n{content}"
 
-        prompt_params = PromptParams(user_prompt=content,
-                                     system_prompt=system,
-                                     channel=message.channel,
-                                     user_name=display_name,
-                                     max_tokens=DEFAULT_MAX_TOKENS,
-                                     lookback_count=DEFAULT_MESSAGE_LOOKBACK_COUNT)
+        prompt_params = PromptParams(
+            user_prompt=content,
+            system_prompt=system,
+            channel=message.channel,
+            user_name=display_name,
+            max_tokens=DEFAULT_MAX_TOKENS,
+            lookback_count=DEFAULT_MESSAGE_LOOKBACK_COUNT
+        )
 
         reply = await self.fetch_openai_completion(prompt_params)
         return reply.strip()
@@ -163,32 +202,31 @@ class OpenAIBot:
                 max_tokens=max_tokens,
                 model="gpt-4o",
                 messages=messages,
-                functions = [
-                {
-                    "name": "fetch_weezerpedia_data",
-                    "description": "Queries Weezerpedia API for detailed information about Weezer-related topics. " \
-                        "Only call this if the most recent messages warrant it, and you have not already responded on a query.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query_term": {
-                                "type": "string",
-                                "description": "The specific Weezer-related topic to look up in Weezerpedia."
-                            }
-                        },
-                        "required": ["query_term"]
+                functions=[
+                    {
+                        "name": "fetch_weezerpedia_data",
+                        "description": "Queries Weezerpedia API for detailed information about Weezer-related topics. " \
+                            "Only call this if the most recent messages warrant it, and you have not already responded on a query.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query_term": {
+                                    "type": "string",
+                                    "description": "The specific Weezer-related topic to look up in Weezerpedia."
+                                }
+                            },
+                            "required": ["query_term"]
+                        }
                     }
-                }
                 ],
                 function_call="auto" if function_call else "none"
-                )
+            )
 
             response_text = completion.choices[0].message.content
             choice = completion.choices[0].message
 
             if choice.function_call and function_call:
                 arguments = choice.function_call.arguments
-
                 function_args = json.loads(arguments)
                 query_term = function_args.get("query_term")
 
@@ -200,15 +238,15 @@ class OpenAIBot:
                 return response_text
 
         except openai.APIError as e:
-            response_text = f"An error occurred: {e}"
+            response_text = f"_get_response_or_weezerpedia_function_call_results An error occurred: {e}"
         except Exception as e:
-            response_text = f"An error occurred: {e}"
+            response_text = f"_get_response_or_weezerpedia_function_call_results An error occurred: {e}"
         return response_text
 
     async def fetch_openai_completion(self, prompt_params: PromptParams):
         messages = await OpenAIBot._create_message_prompt(prompt_params)
         function_call_response_text = self._get_response_or_weezerpedia_function_call_results(messages, True, prompt_params.max_tokens)
-        function_call_content =  [{"role": "assistant", "content": f"Incorporate the following Weezerpedia entry into your response, \
+        function_call_content = [{"role": "assistant", "content": f"Incorporate the following Weezerpedia entry into your response, \
                                    to the extent it is relevant: \n {function_call_response_text}"}] if function_call_response_text else []
         messages += function_call_content
         return self._get_response_or_weezerpedia_function_call_results(messages, False, prompt_params.max_tokens)
@@ -217,16 +255,20 @@ class OpenAIBot:
     async def _create_message_prompt(prompt_params: PromptParams) -> list[dict[str, str]]:
         messages = []
         async for msg in prompt_params.channel.history(limit=prompt_params.lookback_count, oldest_first=False):
-            messages.append({"role": "user",
-                             "content": f"{msg.author.nick or msg.author.name}: {msg.content}"})
+            messages.append({
+                "role": "user",
+                "content": f"{msg.author.nick or msg.author.name}: {msg.content}"
+            })
             attachment_urls = [attachment.url for attachment in msg.attachments]
             OpenAIBot._append_any_images(attachment_urls, messages)
         messages = messages[::-1]
         system_message = {"role": "system", "content": prompt_params.system_prompt}
         messages.insert(0, system_message)
         if prompt_params.user_prompt:
-            messages.append({"role": "user",
-                             "content": prompt_params.user_prompt})
+            messages.append({
+                "role": "user",
+                "content": prompt_params.user_prompt
+            })
         return messages
 
     @staticmethod
